@@ -89,6 +89,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                     joinedRef.current = false;
                     intentionalCloseRef.current = true;
                     ws.close();
+                } else if (msg.type === 'CODE_OK') {
+                    setError(null);
+                    dispatch(msg);
                 } else {
                     setError(null);
                     dispatch(msg);

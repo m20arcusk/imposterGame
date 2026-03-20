@@ -12,12 +12,14 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
                 ...state,
                 phase: 'LOBBY',
                 users: message.data,
+                safeMode: message.safeMode ?? false,
                 question: undefined,
                 answers: undefined,
                 correctQuestion: undefined,
                 result: undefined,
                 answerConfirmed: false,
                 voteConfirmed: false,
+                codeAck: undefined,
             };
 
         case 'QUESTION_ASSIGNMENT':
@@ -62,6 +64,9 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
 
         case 'GAME_ENDED':
             return { ...initialGameState, gameEnded: true };
+
+        case 'CODE_OK':
+            return { ...state, codeAck: message.message };
 
         case 'ERROR':
             return state;

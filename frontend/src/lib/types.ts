@@ -27,10 +27,14 @@ export type GameState = {
     answerConfirmed?: boolean;
     voteConfirmed?: boolean;
     gameEnded?: boolean;
+    /** When true, server excludes questions with safe=false */
+    safeMode?: boolean;
+    /** Last successful lobby CODE command feedback */
+    codeAck?: string;
 };
 
 export type ServerMessage =
-    | { type: 'LOBBY_UPDATE'; data: User[] }
+    | { type: 'LOBBY_UPDATE'; data: User[]; safeMode?: boolean }
     | { type: 'JOIN_CONFIRMED'; username: string; color: string; score: number }
     | { type: 'QUESTION_ASSIGNMENT'; question: string }
     | { type: 'ROUND_UPDATE'; state: 'VOTING'; data: { correctQuestion: string; answersSubmitted: Answer[] } }
@@ -38,4 +42,5 @@ export type ServerMessage =
     | { type: 'ANSWER_CONFIRMED' }
     | { type: 'VOTE_CONFIRMED' }
     | { type: 'GAME_ENDED' }
+    | { type: 'CODE_OK'; message: string }
     | { type: 'ERROR'; message: string };
