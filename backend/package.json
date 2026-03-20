@@ -1,0 +1,8 @@
+{
+  "name": "imposter-game-backend",
+  "private": true,
+  "scripts": {
+    "seed": "npm run seed --prefix imposter",
+    "seed:mpkam": "npm run seed:mpkam --prefix imposter"
+  }
+}

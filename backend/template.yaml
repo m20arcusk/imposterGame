@@ -1,0 +1,158 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Imposter Game - WebSocket API
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs24.x
+    Architectures:
+      - x86_64
+    LoggingConfig:
+      LogFormat: JSON
+
+Resources:
+  # -- WebSocket API --
+  ImposterWebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: ImposterGameWebSocket
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  # -- Lambda --
+  GameHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: imposter/
+      Handler: handler.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource:
+                - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ImposterWebSocketApi}/*"
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Scan
+              Resource: "*"
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: Connections
+          GAME_SESSIONS_TABLE: GameSessions
+          QUESTIONS_TABLE: Questions
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2020
+        Sourcemap: true
+        EntryPoints:
+          - handler.ts
+
+  # -- Permission for API GW to invoke Lambda --
+  GameHandlerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GameHandler
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ImposterWebSocketApi}/*"
+
+  # -- Single integration (all routes point to same Lambda) --
+  GameIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GameHandler.Arn}/invocations"
+
+  # -- Routes --
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Sub "integrations/${GameIntegration}"
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+      RouteKey: $disconnect
+      Target: !Sub "integrations/${GameIntegration}"
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+      RouteKey: $default
+      Target: !Sub "integrations/${GameIntegration}"
+
+  # -- Deployment & Stage --
+  WebSocketDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - DefaultRoute
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+
+  WebSocketStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ImposterWebSocketApi
+      StageName: prod
+      DeploymentId: !Ref WebSocketDeployment
+
+  # -- DynamoDB Table --
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Connections
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: connectionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: connectionId
+          KeyType: HASH
+
+  GameSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: GameSessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
+
+  QuestionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Questions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: questionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: questionId
+          KeyType: HASH
+
+Outputs:
+  WebSocketUrl:
+    Description: WebSocket endpoint URL
+    Value: !Sub "wss://${ImposterWebSocketApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  GameHandlerArn:
+    Description: Game Handler Lambda ARN
+    Value: !GetAtt GameHandler.Arn
