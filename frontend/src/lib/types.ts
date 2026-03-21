@@ -20,6 +20,8 @@ export type GamePhase = 'LOBBY' | 'QUESTION' | 'VOTING' | 'RESULT';
 export type GameState = {
     phase: GamePhase;
     users: User[];
+    /** Lobby admin username (server); only they may start a round or end game from the lobby. */
+    adminUsername?: string | null;
     question?: string;
     answers?: Answer[];
     correctQuestion?: string;
@@ -34,7 +36,7 @@ export type GameState = {
 };
 
 export type ServerMessage =
-    | { type: 'LOBBY_UPDATE'; data: User[]; safeMode?: boolean }
+    | { type: 'LOBBY_UPDATE'; data: User[]; safeMode?: boolean; adminUsername?: string | null }
     | { type: 'JOIN_CONFIRMED'; username: string; color: string; score: number }
     | { type: 'QUESTION_ASSIGNMENT'; question: string }
     | { type: 'ROUND_UPDATE'; state: 'VOTING'; data: { correctQuestion: string; answersSubmitted: Answer[] } }

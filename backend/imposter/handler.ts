@@ -38,6 +38,24 @@ function pickAvailableColor(users: { color: string }[]): string {
     return COLORS[users.length % COLORS.length];
 }
 
+function getUsernameForConnection(session: any, connectionId: string): string | null {
+    const u = session.users?.find((x: any) => x.connectionId === connectionId);
+    return u?.username ?? null;
+}
+
+/** If no admin or current admin left the lobby, set admin to first user; clear if lobby empty. */
+function ensureAdminForSession(session: any): void {
+    if (!session.users?.length) {
+        session.adminUsername = null;
+        return;
+    }
+    const current = session.adminUsername;
+    const stillThere = current && session.users.some((u: any) => u.username === current);
+    if (!stillThere) {
+        session.adminUsername = session.users[0].username;
+    }
+}
+
 // ── Helpers ──
 // This is a helper function to get the APIGW client
 // which is used to send messages to the users
@@ -68,6 +86,7 @@ async function getOrCreateSession(): Promise<any> {
             usedQuestionIds: JSON.parse(result.Item.usedQuestionIds?.S ?? '[]'),
             excludedRanges: JSON.parse(result.Item.excludedRanges?.S ?? '[]'),
             safeMode: result.Item.safeMode?.BOOL === true,
+            adminUsername: result.Item.adminUsername?.S ?? null,
         };
     }
     return {
@@ -78,6 +97,7 @@ async function getOrCreateSession(): Promise<any> {
         usedQuestionIds: [],
         excludedRanges: [],
         safeMode: false,
+        adminUsername: null,
     };
 }
 
@@ -91,6 +111,9 @@ async function saveSession(session: any): Promise<void> {
         excludedRanges: { S: JSON.stringify(session.excludedRanges ?? []) },
         safeMode: { BOOL: session.safeMode === true },
     };
+    if (session.adminUsername) {
+        item.adminUsername = { S: session.adminUsername };
+    }
     if (session.roundData) {
         item.roundData = { S: JSON.stringify(session.roundData) };
     }
@@ -243,6 +266,7 @@ function applySessionWipe(session: any): void {
     session.usedQuestionIds = [];
     session.excludedRanges = [];
     session.safeMode = false;
+    session.adminUsername = null;
 }
 
 /**
@@ -252,6 +276,18 @@ function applySessionWipe(session: any): void {
  * NOTE: This does O(players) GetItem calls per disconnect. If you scale to many rooms/users,
  * consider a GSI on sessionId, connection TTL, or a single "active count" counter instead.
  */
+/** LOBBY only: remove disconnecting player from roster and reassign admin. */
+async function removeLobbyUserOnDisconnect(connectionId: string, event: any): Promise<void> {
+    const session = await getOrCreateSession();
+    if (session.state !== 'LOBBY') return;
+    const idx = session.users.findIndex((u: any) => u.connectionId === connectionId);
+    if (idx === -1) return;
+    session.users.splice(idx, 1);
+    ensureAdminForSession(session);
+    await saveSession(session);
+    await broadcastLobbyUpdate(event, session);
+}
+
 async function abandonSessionIfEveryoneDisconnected(): Promise<void> {
     const session = await getOrCreateSession();
     if (!session.users?.length) return;
@@ -275,6 +311,7 @@ async function broadcastLobbyUpdate(event: any, session: any): Promise<void> {
         type: 'LOBBY_UPDATE',
         data: session.users.map((u: any) => ({ username: u.username, color: u.color, score: u.score })),
         safeMode: session.safeMode === true,
+        adminUsername: session.adminUsername ?? null,
     };
     for (const user of session.users) {
         await sendToConnection(event, user.connectionId, payload);
@@ -294,6 +331,7 @@ async function sendSessionCatchUp(event: any, connectionId: string, session: any
                 type: 'LOBBY_UPDATE',
                 data: session.users.map((u: any) => ({ username: u.username, color: u.color, score: u.score })),
                 safeMode: session.safeMode === true,
+                adminUsername: session.adminUsername ?? null,
             });
             return;
         }
@@ -348,6 +386,15 @@ async function sendSessionCatchUp(event: any, connectionId: string, session: any
 // ── Action Handlers ──
 async function handleStartRound(connectionId: string, body: any, event: any): Promise<void> {
     const session = await getOrCreateSession();
+
+    const requester = getUsernameForConnection(session, connectionId);
+    if (!requester || requester !== session.adminUsername) {
+        await sendToConnection(event, connectionId, {
+            type: 'ERROR',
+            message: 'Only the lobby admin can start a round.',
+        });
+        return;
+    }
 
     // check if the game is in the lobby
     if (session.state !== 'LOBBY') {
@@ -633,6 +680,8 @@ async function handleJoinSession(connectionId: string, body: any, event: any): P
         if (existing) existing.connectionId = connectionId;
     }
 
+    ensureAdminForSession(session);
+
     // saves the user/update to the game session
     await saveSession(session);
 
@@ -715,11 +764,39 @@ async function handleCode(connectionId: string, body: any, event: any): Promise<
         }
         await forceDisconnectConnection(event, target.connectionId);
         session.users = session.users.filter((u: any) => u.connectionId !== target.connectionId);
+        ensureAdminForSession(session);
         await saveSession(session);
         await broadcastLobbyUpdate(event, session);
         await sendToConnection(event, connectionId, {
             type: 'CODE_OK',
             message: `Removed ${target.username} from the lobby.`,
+        });
+        return;
+    }
+
+    if (lower.startsWith('admin-')) {
+        const targetName = raw.replace(/^admin-/i, '').trim();
+        if (!targetName) {
+            await sendToConnection(event, connectionId, {
+                type: 'ERROR',
+                message: 'Invalid format. Use admin-username',
+            });
+            return;
+        }
+        const target = session.users.find((u: any) => u.username.toLowerCase() === targetName.toLowerCase());
+        if (!target) {
+            await sendToConnection(event, connectionId, {
+                type: 'ERROR',
+                message: `Player "${targetName}" not in lobby.`,
+            });
+            return;
+        }
+        session.adminUsername = target.username;
+        await saveSession(session);
+        await broadcastLobbyUpdate(event, session);
+        await sendToConnection(event, connectionId, {
+            type: 'CODE_OK',
+            message: `${target.username} is now lobby admin.`,
         });
         return;
     }
@@ -742,14 +819,24 @@ async function handleLeaveSession(connectionId: string, _body: any, event: any):
         return;
     }
     session.users.splice(idx, 1);
+    ensureAdminForSession(session);
     await saveSession(session);
     await broadcastLobbyUpdate(event, session);
     await sendToConnection(event, connectionId, { type: 'LEFT_SESSION' });
     await forceDisconnectConnection(event, connectionId);
 }
 
-async function handleEndGame(_connectionId: string, _body: any, event: any): Promise<void> {
+async function handleEndGame(connectionId: string, _body: any, event: any): Promise<void> {
     const session = await getOrCreateSession();
+
+    const requester = getUsernameForConnection(session, connectionId);
+    if (!requester || requester !== session.adminUsername) {
+        await sendToConnection(event, connectionId, {
+            type: 'ERROR',
+            message: 'Only the lobby admin can end the game.',
+        });
+        return;
+    }
 
     for (const user of session.users) {
         await sendToConnection(event, user.connectionId, { type: 'GAME_ENDED' });
@@ -781,6 +868,11 @@ export const handler = async (event: any) => {
         case '$disconnect':
             // NOTE: Per-disconnect we delete the connection then may scan session + GetItem each player.
             // Fine for a small friends app; optimize if you add many concurrent rooms or large lobbies.
+            try {
+                await removeLobbyUserOnDisconnect(connectionId, event);
+            } catch (err) {
+                console.error('removeLobbyUserOnDisconnect:', err);
+            }
             await ddb.send(
                 new DeleteItemCommand({
                     TableName: process.env.CONNECTIONS_TABLE!,

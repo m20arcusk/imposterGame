@@ -4,12 +4,14 @@ import { useState, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useWebSocket } from '../lib/WebSocketContext';
 import PersonIcon from '@mui/icons-material/Person';
+import LockIcon from '@mui/icons-material/Lock';
 import LogoutIcon from '@mui/icons-material/Logout';
 
 export default function Lobby() {
     const { gameState, sendMessage, username } = useWebSocket();
-    const { users, codeAck } = gameState;
+    const { users, codeAck, adminUsername } = gameState;
     const canStart = users.length >= 3;
+    const isAdmin = Boolean(username && adminUsername && username === adminUsername);
     const [codeInput, setCodeInput] = useState('');
 
     const handleStartRound = () => sendMessage('START_ROUND');
@@ -24,15 +26,21 @@ export default function Lobby() {
         setCodeInput('');
     };
 
+    const startDisabled = !canStart || !isAdmin;
+    const endDisabled = !isAdmin;
+
     return (
         <div className="flex flex-col h-full p-4 max-w-lg mx-auto">
             <div className="relative mb-2 shrink-0">
                 <button
                     type="button"
                     onClick={handleEndGame}
-                    title="End game for everyone"
+                    disabled={endDisabled}
+                    title={
+                        isAdmin ? 'End game for everyone' : 'Only the lobby admin can end the game'
+                    }
                     className="absolute top-0 right-0 z-10 px-3 py-1.5 text-xs font-medium rounded-lg border border-red-900/60
-                               text-red-300/90 hover:bg-red-950/50 transition-colors"
+                               text-red-300/90 hover:bg-red-950/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
                     End game
                 </button>
@@ -66,41 +74,63 @@ export default function Lobby() {
 
             <div className="flex-1 space-y-2 overflow-y-auto mb-6 min-h-0">
                 <AnimatePresence mode="popLayout">
-                    {users.map((user) => (
-                        <motion.div
-                            key={user.username}
-                            layout
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: 20 }}
-                            className="flex items-center gap-3 bg-gray-900 rounded-xl px-4 py-3 border border-gray-800"
-                        >
-                            <PersonIcon sx={{ color: user.color, fontSize: 28 }} />
-                            <span className="flex-1 font-medium text-lg" style={{ color: user.color }}>
-                                {user.username}
-                                {user.username === username && (
-                                    <span className="text-gray-500 text-sm ml-2">(you)</span>
-                                )}
-                            </span>
-                            <span className="text-gray-400 font-mono text-sm bg-gray-800 px-2 py-1 rounded-lg">
-                                {user.score} pts
-                            </span>
-                        </motion.div>
-                    ))}
+                    {users.map((user) => {
+                        const userIsAdmin = adminUsername === user.username;
+                        return (
+                            <motion.div
+                                key={user.username}
+                                layout
+                                initial={{ opacity: 0, x: -20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: 20 }}
+                                className="flex items-center gap-3 bg-gray-900 rounded-xl px-4 py-3 border border-gray-800"
+                            >
+                                <PersonIcon sx={{ color: user.color, fontSize: 28 }} />
+                                <span className="flex-1 font-medium text-lg min-w-0" style={{ color: user.color }}>
+                                    {user.username}
+                                    {user.username === username && (
+                                        <span className="text-gray-500 text-sm ml-2">(you)</span>
+                                    )}
+                                    {userIsAdmin && (
+                                        <span
+                                            className="inline-flex items-center gap-0.5 text-amber-400/90 text-xs ml-2 font-normal"
+                                            title="Lobby admin"
+                                        >
+                                            <LockIcon sx={{ fontSize: 14 }} />
+                                            admin
+                                        </span>
+                                    )}
+                                </span>
+                                <span className="text-gray-400 font-mono text-sm bg-gray-800 px-2 py-1 rounded-lg shrink-0">
+                                    {user.score} pts
+                                </span>
+                            </motion.div>
+                        );
+                    })}
                 </AnimatePresence>
             </div>
 
             <div className="space-y-3 shrink-0">
                 <motion.button
-                    whileHover={canStart ? { scale: 1.02 } : {}}
-                    whileTap={canStart ? { scale: 0.98 } : {}}
+                    whileHover={!startDisabled ? { scale: 1.02 } : {}}
+                    whileTap={!startDisabled ? { scale: 0.98 } : {}}
                     onClick={handleStartRound}
-                    disabled={!canStart}
+                    disabled={startDisabled}
                     className="w-full py-3 bg-green-600 hover:bg-green-500 disabled:bg-gray-700
                                disabled:text-gray-500 rounded-xl text-lg font-semibold transition-colors"
-                    title={canStart ? 'Start the round' : 'Need at least 3 players'}
+                    title={
+                        !isAdmin
+                            ? 'Only the lobby admin can start a round'
+                            : canStart
+                              ? 'Start the round'
+                              : 'Need at least 3 players'
+                    }
                 >
-                    {canStart ? 'Start Round' : `Need ${3 - users.length} more player${3 - users.length !== 1 ? 's' : ''}`}
+                    {!isAdmin
+                        ? 'Only admin can start'
+                        : canStart
+                          ? 'Start Round'
+                          : `Need ${3 - users.length} more player${3 - users.length !== 1 ? 's' : ''}`}
                 </motion.button>
 
                 <motion.button

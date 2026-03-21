@@ -13,6 +13,7 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
                 phase: 'LOBBY',
                 users: message.data,
                 safeMode: message.safeMode ?? false,
+                adminUsername: message.adminUsername ?? null,
                 question: undefined,
                 answers: undefined,
                 correctQuestion: undefined,
@@ -28,6 +29,7 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
                 phase: 'QUESTION',
                 question: message.question,
                 answerConfirmed: false,
+                adminUsername: state.adminUsername,
             };
 
         case 'ROUND_UPDATE':
@@ -38,6 +40,7 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
                     correctQuestion: message.data.correctQuestion,
                     answers: message.data.answersSubmitted,
                     voteConfirmed: false,
+                    adminUsername: state.adminUsername,
                 };
             }
             if (message.state === 'RESULT') {
@@ -45,6 +48,7 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
                     ...state,
                     phase: 'RESULT',
                     result: message.data,
+                    adminUsername: state.adminUsername,
                     users: state.users.map((u) => {
                         const updated = message.data.updatedScores.find((s) => s.username === u.username);
                         return updated ? { ...u, score: updated.score } : u;
