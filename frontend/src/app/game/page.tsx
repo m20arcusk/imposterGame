@@ -54,15 +54,6 @@ function GameShell() {
 
     return (
         <div className="min-h-dvh flex flex-col">
-            {/* {error && ( 
-                <motion.div
-                    initial={{ opacity: 0, y: -20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 text-sm text-center"
-                >
-                    {error}
-                </motion.div>
-            )} */}
 
             <AnimatePresence mode="wait">
                 <motion.div

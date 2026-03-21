@@ -65,6 +65,9 @@ export function gameReducer(state: GameState, message: ServerMessage): GameState
         case 'GAME_ENDED':
             return { ...initialGameState, gameEnded: true };
 
+        case 'LEFT_SESSION':
+            return { ...initialGameState, gameEnded: true };
+
         case 'CODE_OK':
             return { ...state, codeAck: message.message };
 

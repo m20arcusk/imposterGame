@@ -727,6 +727,27 @@ async function handleCode(connectionId: string, body: any, event: any): Promise<
     await sendToConnection(event, connectionId, { type: 'ERROR', message: 'Unknown code.' });
 }
 
+async function handleLeaveSession(connectionId: string, _body: any, event: any): Promise<void> {
+    const session = await getOrCreateSession();
+    if (session.state !== 'LOBBY') {
+        await sendToConnection(event, connectionId, {
+            type: 'ERROR',
+            message: 'You can only disconnect from the lobby. Use Return to Lobby if you are mid-round.',
+        });
+        return;
+    }
+    const idx = session.users.findIndex((u: any) => u.connectionId === connectionId);
+    if (idx === -1) {
+        await sendToConnection(event, connectionId, { type: 'ERROR', message: 'Not in this game session.' });
+        return;
+    }
+    session.users.splice(idx, 1);
+    await saveSession(session);
+    await broadcastLobbyUpdate(event, session);
+    await sendToConnection(event, connectionId, { type: 'LEFT_SESSION' });
+    await forceDisconnectConnection(event, connectionId);
+}
+
 async function handleEndGame(_connectionId: string, _body: any, event: any): Promise<void> {
     const session = await getOrCreateSession();
 
@@ -799,6 +820,9 @@ export const handler = async (event: any) => {
                     break;
                 case 'END_GAME':
                     await handleEndGame(connectionId, body, event);
+                    break;
+                case 'LEAVE_SESSION':
+                    await handleLeaveSession(connectionId, body, event);
                     break;
                 case 'CODE':
                     await handleCode(connectionId, body, event);

@@ -42,5 +42,6 @@ export type ServerMessage =
     | { type: 'ANSWER_CONFIRMED' }
     | { type: 'VOTE_CONFIRMED' }
     | { type: 'GAME_ENDED' }
+    | { type: 'LEFT_SESSION' }
     | { type: 'CODE_OK'; message: string }
     | { type: 'ERROR'; message: string };

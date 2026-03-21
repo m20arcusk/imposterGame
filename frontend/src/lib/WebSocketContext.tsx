@@ -81,7 +81,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                     setJoined(true);
                     setError(null);
                     dispatch(msg);
-                } else if (msg.type === 'GAME_ENDED') {
+                } else if (msg.type === 'GAME_ENDED' || msg.type === 'LEFT_SESSION') {
                     dispatch(msg);
                     localStorage.removeItem('imposter_username');
                     setUsername(null);
@@ -102,8 +102,12 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         };
 
         ws.onclose = () => {
-            setConnected(false);
+            // Ignore closes from a replaced socket (React Strict Mode remount, reconnect, etc.)
+            if (wsRef.current !== ws) {
+                return;
+            }
             wsRef.current = null;
+            setConnected(false);
             if (!intentionalCloseRef.current && usernameRef.current) {
                 const delay = Math.min(1000 * Math.pow(2, retryRef.current), 10000);
                 retryRef.current += 1;
@@ -124,7 +128,9 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         return () => {
             intentionalCloseRef.current = true;
             if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-            wsRef.current?.close();
+            const socket = wsRef.current;
+            wsRef.current = null;
+            socket?.close();
         };
     }, [connectWs]);
 
