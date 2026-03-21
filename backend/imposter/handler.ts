@@ -102,7 +102,6 @@ async function saveSession(session: any): Promise<void> {
     );
 }
 
-
 async function resolveUsernameConflict(
     session: any,
     username: string,
@@ -112,7 +111,7 @@ async function resolveUsernameConflict(
     // if the user is not found, we can add them to the session
     if (!existing) return { action: 'add' }; // New user
     // if the user is found, and the connectionId is the same, we can return that the user is already in
-    if (existing.connectionId === connectionId) return { action: 'idempotent' }; 
+    if (existing.connectionId === connectionId) return { action: 'idempotent' };
     // if the user is found, and the connectionId is different, we can check if the old connection is still active
     // when a user disconnects, the connection is deleted from the connections table
     // So, if the connection is deleted, we can reconnect the user by updating the connectionId in the sessions table for the user,
@@ -131,7 +130,7 @@ async function resolveUsernameConflict(
 }
 
 // this is how we send information to the users
-/** Close a WebSocket and remove its Connections row (kick / admin). */
+/** Close a WebSocket and remove its Connections row (kick). */
 async function forceDisconnectConnection(event: any, connectionId: string): Promise<void> {
     const client = getApigwClient(event);
     try {
@@ -279,6 +278,70 @@ async function broadcastLobbyUpdate(event: any, session: any): Promise<void> {
     };
     for (const user of session.users) {
         await sendToConnection(event, user.connectionId, payload);
+    }
+}
+
+/**
+ * After mid-game reconnect, send this socket the same messages it would have had if still connected
+ * (matches payloads from handleStartRound / handleSubmitAnswer / handleVote).
+ */
+async function sendSessionCatchUp(event: any, connectionId: string, session: any, username: string): Promise<void> {
+    const rd = session.roundData;
+
+    switch (session.state) {
+        case 'LOBBY': {
+            await sendToConnection(event, connectionId, {
+                type: 'LOBBY_UPDATE',
+                data: session.users.map((u: any) => ({ username: u.username, color: u.color, score: u.score })),
+                safeMode: session.safeMode === true,
+            });
+            return;
+        }
+        case 'QUESTION': {
+            if (!rd) return;
+            const question =
+                username === rd.imposterUsername ? rd.imposterQuestion.question : rd.correctQuestion.question;
+            await sendToConnection(event, connectionId, { type: 'QUESTION_ASSIGNMENT', question });
+            const alreadyAnswered = rd.answersSubmitted?.some((a: any) => a.username === username);
+            if (alreadyAnswered) {
+                await sendToConnection(event, connectionId, { type: 'ANSWER_CONFIRMED' });
+            }
+            return;
+        }
+        case 'VOTING': {
+            if (!rd) return;
+            await sendToConnection(event, connectionId, {
+                type: 'ROUND_UPDATE',
+                state: 'VOTING',
+                data: {
+                    correctQuestion: rd.correctQuestion.question,
+                    answersSubmitted: rd.answersSubmitted,
+                },
+            });
+            const alreadyVoted = rd.votes?.some((v: any) => v.username === username);
+            if (alreadyVoted) {
+                await sendToConnection(event, connectionId, { type: 'VOTE_CONFIRMED' });
+            }
+            return;
+        }
+        case 'RESULT': {
+            if (!rd) return;
+            const imposterUsername = rd.imposterUsername;
+            const votesForImposter = rd.votes.filter((v: any) => v.target === imposterUsername).length;
+            const majorityCaught = votesForImposter > session.users.length / 2;
+            await sendToConnection(event, connectionId, {
+                type: 'ROUND_UPDATE',
+                state: 'RESULT',
+                data: {
+                    imposterUsername,
+                    success: majorityCaught,
+                    updatedScores: session.users.map((u: any) => ({ username: u.username, score: u.score })),
+                },
+            });
+            return;
+        }
+        default:
+            return;
     }
 }
 
@@ -499,12 +562,57 @@ async function handleJoinSession(connectionId: string, body: any, event: any): P
     // grab session info
     const session = await getOrCreateSession();
 
-    // if the game is not in the lobby, we can't join
+    // if the game is not in the lobby, we can't join — unless this username is already in the session (reconnect mid-round)
     if (session.state !== 'LOBBY') {
+        const userInSession = session.users.some((u: any) => u.username === username);
+        if (!userInSession) {
+            await sendToConnection(event, connectionId, {
+                type: 'ERROR',
+                message: 'Game is in progress. Wait for the lobby.',
+            });
+            return;
+        }
+
+        // handle username conflicts, or user rejoining (same logic as lobby, but no new players mid-game)
+        const resolution = await resolveUsernameConflict(session, username, connectionId);
+        if (resolution.action === 'reject') {
+            await sendToConnection(event, connectionId, { type: 'ERROR', message: 'Username is already taken.' });
+            return;
+        }
+        if (resolution.action === 'add') {
+            await sendToConnection(event, connectionId, { type: 'ERROR', message: 'Cannot join a round in progress.' });
+            return;
+        }
+
+        // if the user is reconnecting, we can update the connectionId for the user
+        if (resolution.action === 'reconnect') {
+            const existing = session.users.find((u: any) => u.username === username);
+            if (existing) existing.connectionId = connectionId;
+            // saves the user/update to the game session
+            await saveSession(session);
+        }
+
+        await ddb.send(
+            new UpdateItemCommand({
+                TableName: process.env.CONNECTIONS_TABLE!,
+                Key: { connectionId: { S: connectionId } },
+                UpdateExpression: 'SET username = :u, sessionId = :s',
+                ExpressionAttributeValues: {
+                    ':u': { S: username },
+                    ':s': { S: SESSION_ID },
+                },
+            }),
+        );
+
+        const joiningUser = session.users.find((u: any) => u.username === username);
         await sendToConnection(event, connectionId, {
-            type: 'ERROR',
-            message: 'Game is in progress. Wait for the lobby.',
+            type: 'JOIN_CONFIRMED',
+            username: joiningUser.username,
+            color: joiningUser.color,
+            score: joiningUser.score,
         });
+
+        await sendSessionCatchUp(event, connectionId, session, username);
         return;
     }
 
@@ -619,10 +727,9 @@ async function handleCode(connectionId: string, body: any, event: any): Promise<
     await sendToConnection(event, connectionId, { type: 'ERROR', message: 'Unknown code.' });
 }
 
-async function handleEndGame(connectionId: string, body: any, event: any): Promise<void> {
+async function handleEndGame(_connectionId: string, _body: any, event: any): Promise<void> {
     const session = await getOrCreateSession();
 
-    // notify all players before clearing
     for (const user of session.users) {
         await sendToConnection(event, user.connectionId, { type: 'GAME_ENDED' });
     }

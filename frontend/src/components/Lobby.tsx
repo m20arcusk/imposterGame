@@ -4,11 +4,10 @@ import { useState, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useWebSocket } from '../lib/WebSocketContext';
 import PersonIcon from '@mui/icons-material/Person';
-import LockIcon from '@mui/icons-material/Lock';
 
 export default function Lobby() {
     const { gameState, sendMessage, username } = useWebSocket();
-    const { users, safeMode, codeAck } = gameState;
+    const { users, codeAck } = gameState;
     const canStart = users.length >= 3;
     const [codeInput, setCodeInput] = useState('');
 
@@ -91,6 +90,7 @@ export default function Lobby() {
                 </motion.button>
 
                 <button
+                    type="button"
                     onClick={handleEndGame}
                     className="w-full py-2 text-gray-400 hover:text-red-400 text-sm transition-colors"
                 >

@@ -1,6 +1,7 @@
 /**
  * Seed the Questions DynamoDB table.
  *
+ * cd into the imposter folder and run:
  * RUN THIS SCRIPT BY ADDING QUESTIONS TO THE questionsToAdd ARRAY AND RUNNING: AWS_PROFILE=mpkam npm run seed
  *
  * Each row is written with `safe` (BOOL). Omit the third token in the string to default safe=true.
@@ -17,24 +18,14 @@ const REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-w
 //     or: '"<question>" "<range>" "<safe>"'  → safe is true|false (also accepts 1|0)
 // ──────────────────────────────────────────────
 const questionsToAdd = [
-    '"Type the name of the person who you messaged last" "likely"',
-    '"Type the name of the person who is most likely to become rich" "likely"',
-    '"Type the name of the person who is most likely to become homeless" "likely"',
-    '"Type the name of the person who is most likely to get robbed" "likely"',
-    '"Type the name of the person who is most likely to go to jail" "likely"',
-    '"Type the name of the person who is most likely to become a teenage parent" "likely"',
-    '"Type the name of the person who is most likely to fart during sex" "likely"',
-    '"Type the name of the person who is most likely to have a baby mama/daddy" "likely"',
-    '"Type the name of the person who is most likely to become a model" "likely"',
-    '"Type the name of the person who is most likely to get catfished on a date" "likely"',
-    '"Type the name of the person who is most likely to survive a zombie apocalypse" "likely"',
-    '"Type the name of the person who is most likely to accidentally leak a secret" "likely"',
-    '"Type the name of the person who is most likely to go on singles inferno" "likely"',
-    '"Type the name of the person who is most likely to fall asleep first at a party" "likely"',
-    '"Type the name of the person who is most likely to marry first" "likely"',
-    '"Type the name of the person who is most likely to cry (for anything)" "likely"',
-    '"Type the name of the person who is most likely to leave you on read" "likely"',
-    '"Type the name of the person who is most likely to be late" "likely"',
+    '"What animal do you want to be more like?" "animal"',
+    '"What animal would you choose to protect you from a zombie?" "animal"',
+    '"Which animal do you think has the best animated movie?" "animal"',
+    '"What pet would you not allow your kid to have?" "animal"',
+    '"What animal do you think the person on your right looks/acts like?" "animal"',
+    '"What animal is your favourite pokemon most like?" "animal"',
+    '"Worst animal to find secretly living in your house?" "animal"',
+    '"Name an animal you’d want to steal a trait from." "animal"',
 ];
 
 function generateId(): string {
