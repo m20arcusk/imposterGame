@@ -61,7 +61,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             setConnected(true);
             retryRef.current = 0;
             setUsername(user);
-            ws.send(JSON.stringify({ action: 'JOIN_SESSION', username: user }));
+            const storedToken = localStorage.getItem('imposter_session_token');
+            const joinPayload: Record<string, string> = { action: 'JOIN_SESSION', username: user };
+            if (storedToken) joinPayload.sessionToken = storedToken;
+            ws.send(JSON.stringify(joinPayload));
         };
 
         ws.onmessage = (evt) => {
@@ -72,6 +75,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                     if (!joinedRef.current) {
                         sessionStorage.setItem('imposter_join_error', msg.message);
                         localStorage.removeItem('imposter_username');
+                        localStorage.removeItem('imposter_session_token');
                         setUsername(null);
                         intentionalCloseRef.current = true;
                         ws.close();
@@ -80,10 +84,14 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
                     joinedRef.current = true;
                     setJoined(true);
                     setError(null);
+                    if (msg.sessionToken) {
+                        localStorage.setItem('imposter_session_token', msg.sessionToken);
+                    }
                     dispatch(msg);
                 } else if (msg.type === 'GAME_ENDED' || msg.type === 'LEFT_SESSION') {
                     dispatch(msg);
                     localStorage.removeItem('imposter_username');
+                    localStorage.removeItem('imposter_session_token');
                     setUsername(null);
                     setJoined(false);
                     joinedRef.current = false;

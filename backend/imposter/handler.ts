@@ -10,7 +10,10 @@ import {
     ApiGatewayManagementApiClient,
     PostToConnectionCommand,
     DeleteConnectionCommand,
+    GetConnectionCommand,
 } from '@aws-sdk/client-apigatewaymanagementapi';
+
+import * as crypto from 'crypto';
 
 import type {
     GameSession,
@@ -20,6 +23,10 @@ import type {
     UsernameConflictAction,
     WsHandlerEvent,
 } from './types';
+
+function generateSessionToken(): string {
+    return crypto.randomBytes(16).toString('hex');
+}
 
 const ddb = new DynamoDBClient({});
 
@@ -87,6 +94,44 @@ const getApigwClient = (event: WsHandlerEvent) => {
     });
 };
 
+/**
+ * True if API Gateway still has this WebSocket. False on 410/Gone (stale Dynamo row possible).
+ * On unexpected errors, returns true so we keep rejecting duplicate joins rather than risking a takeover.
+ */
+async function isWebSocketConnectionAlive(event: WsHandlerEvent, connectionId: string): Promise<boolean> {
+    const client = getApigwClient(event);
+    try {
+        await client.send(new GetConnectionCommand({ ConnectionId: connectionId }));
+        return true;
+    } catch (err: unknown) {
+        const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+        if (e.$metadata?.httpStatusCode === 410 || e.name === 'GoneException') {
+            return false;
+        }
+        wsLog(event, {
+            phase: 'getConnection_liveness',
+            targetConnectionId: connectionId,
+            error: err instanceof Error ? err.message : String(err),
+            name: e.name,
+        });
+        console.error('GetConnection during conflict resolution:', err);
+        return true;
+    }
+}
+
+async function deleteConnectionsTableRow(connectionId: string): Promise<void> {
+    try {
+        await ddb.send(
+            new DeleteItemCommand({
+                TableName: process.env.CONNECTIONS_TABLE!,
+                Key: { connectionId: { S: connectionId } },
+            }),
+        );
+    } catch (err) {
+        console.error('DeleteItem stale connection row:', err);
+    }
+}
+
 async function getOrCreateSession(): Promise<GameSession> {
     // Gets session from sessions table - this is a PUT so it
     // creates one if doesn't exist
@@ -152,9 +197,9 @@ async function resolveUsernameConflict(
     username: string,
     connectionId: string,
     event: WsHandlerEvent,
+    clientSessionToken?: string,
 ): Promise<{ action: UsernameConflictAction }> {
     const existing = session.users.find((u) => u.username === username);
-    // if the user is not found, we can add them to the session
     if (!existing) {
         wsLog(event, {
             phase: 'resolveUsernameConflict',
@@ -163,9 +208,8 @@ async function resolveUsernameConflict(
             resolution: 'add',
             oldConnActive: null,
         });
-        return { action: 'add' }; // New user
+        return { action: 'add' };
     }
-    // if the user is found, and the connectionId is the same, we can return that the user is already in
     if (existing.connectionId === connectionId) {
         wsLog(event, {
             phase: 'resolveUsernameConflict',
@@ -177,11 +221,9 @@ async function resolveUsernameConflict(
         });
         return { action: 'idempotent' };
     }
-    // if the user is found, and the connectionId is different, we can check if the old connection is still active
-    // when a user disconnects, the connection is deleted from the connections table
-    // So, if the connection is deleted, we can reconnect the user by updating the connectionId in the sessions table for the user,
-    // and adding the new connectionId to the connections table
-    const oldConnActive = await ddb
+
+    // Check if the old Connections row still exists in Dynamo.
+    let oldConnActive = await ddb
         .send(
             new GetItemCommand({
                 TableName: process.env.CONNECTIONS_TABLE!,
@@ -189,6 +231,38 @@ async function resolveUsernameConflict(
             }),
         )
         .then((r) => !!r.Item);
+
+    let staleDynamoScrubbed = false;
+    let tokenMatchOverride = false;
+
+    if (oldConnActive) {
+        // Layer 1: API Gateway liveness — scrub if 410 Gone.
+        const aliveAtApiGw = await isWebSocketConnectionAlive(event, existing.connectionId);
+        if (!aliveAtApiGw) {
+            await deleteConnectionsTableRow(existing.connectionId);
+            oldConnActive = false;
+            staleDynamoScrubbed = true;
+        }
+    }
+
+    if (oldConnActive) {
+        // Layer 2: session token — allows takeover even when API GW still reports alive
+        // (e.g. mobile airplane mode where the TCP socket hasn't timed out yet).
+        const tokenProvided = !!clientSessionToken;
+        const tokenMatches = tokenProvided && existing.sessionToken === clientSessionToken;
+        if (tokenMatches) {
+            await forceDisconnectConnection(event, existing.connectionId);
+            oldConnActive = false;
+            tokenMatchOverride = true;
+        }
+        wsLog(event, {
+            phase: 'resolveUsernameConflict_tokenCheck',
+            username,
+            tokenProvided,
+            tokenMatches,
+        });
+    }
+
     const resolution = oldConnActive ? 'reject' : 'reconnect';
     wsLog(event, {
         phase: 'resolveUsernameConflict',
@@ -196,10 +270,10 @@ async function resolveUsernameConflict(
         hadExistingUser: true,
         storedConnectionId: existing.connectionId,
         oldConnActive,
+        staleDynamoScrubbed,
+        tokenMatchOverride,
         resolution,
     });
-    // if the old connection is still active, we can reject the new connection
-    // if the old connection is not active, we can reconnect the user
     return oldConnActive ? { action: 'reject' } : { action: 'reconnect' };
 }
 
@@ -605,19 +679,25 @@ async function handleVote(connectionId: string, body: any, event: WsHandlerEvent
         return;
     }
 
-    // calculate if the imposter was caught
-    // if the imposter was caught, award points to all users who voted for the imposter
+    // Majority catches imposter → team wins. Otherwise imposter escapes.
+    // Crew: +1 if team wins and they voted for the imposter; +0.5 if team loses but they did; else 0.
+    // Imposter: +1 only when they escape (unchanged win reward; vote-based “correct” does not apply).
     const imposterUsername = session.roundData.imposterUsername;
     const votesForImposter = votes.filter((v) => v.target === imposterUsername).length;
     const majorityCaught = votesForImposter > session.users.length / 2;
+    const voteTargetByUser = new Map(votes.map((v) => [v.username, v.target]));
 
-    if (majorityCaught) {
-        for (const user of session.users) {
-            if (user.username !== imposterUsername) user.score += 1;
+    for (const user of session.users) {
+        if (user.username === imposterUsername) {
+            if (!majorityCaught) user.score += 1;
+            continue;
         }
-    } else {
-        const imposter = session.users.find((u) => u.username === imposterUsername);
-        if (imposter) imposter.score += 1;
+        const votedForImposter = voteTargetByUser.get(user.username) === imposterUsername;
+        if (majorityCaught) {
+            if (votedForImposter) user.score += 1;
+        } else if (votedForImposter) {
+            user.score += 0.5;
+        }
     }
 
     session.state = 'RESULT';
@@ -663,16 +743,16 @@ async function handleReturnToLobby(connectionId: string, body: any, event: WsHan
 
 async function handleJoinSession(connectionId: string, body: any, event: WsHandlerEvent): Promise<void> {
     const username = body.username ?? body.playerName;
-    // if username is given
+    const clientSessionToken: string | undefined = body.sessionToken;
+
     if (!username) {
         await sendClientError(event, connectionId, 'Username is required.', { action: 'JOIN_SESSION' });
         return;
     }
 
-    // grab session info
     const session = await getOrCreateSession();
 
-    // if the game is not in the lobby, we can't join — unless this username is already in the session (reconnect mid-round)
+    // ── Mid-round reconnect path ──
     if (session.state !== 'LOBBY') {
         const userInSession = session.users.some((u) => u.username === username);
         if (!userInSession) {
@@ -682,8 +762,7 @@ async function handleJoinSession(connectionId: string, body: any, event: WsHandl
             return;
         }
 
-        // handle username conflicts, or user rejoining (same logic as lobby, but no new players mid-game)
-        const resolution = await resolveUsernameConflict(session, username, connectionId, event);
+        const resolution = await resolveUsernameConflict(session, username, connectionId, event, clientSessionToken);
         if (resolution.action === 'reject') {
             await sendClientError(event, connectionId, 'Username is already taken.', { action: 'JOIN_SESSION' });
             return;
@@ -693,11 +772,9 @@ async function handleJoinSession(connectionId: string, body: any, event: WsHandl
             return;
         }
 
-        // if the user is reconnecting, we can update the connectionId for the user
         if (resolution.action === 'reconnect') {
             const existing = session.users.find((u) => u.username === username);
             if (existing) existing.connectionId = connectionId;
-            // saves the user/update to the game session
             await saveSession(session);
         }
 
@@ -725,32 +802,30 @@ async function handleJoinSession(connectionId: string, body: any, event: WsHandl
             username: joiningUser.username,
             color: joiningUser.color,
             score: joiningUser.score,
+            sessionToken: joiningUser.sessionToken,
         });
 
         await sendSessionCatchUp(event, connectionId, session, username);
         return;
     }
 
-    // handle username conflicts, or user rejoining
-    const resolution = await resolveUsernameConflict(session, username, connectionId, event);
+    // ── Lobby join path ──
+    const resolution = await resolveUsernameConflict(session, username, connectionId, event, clientSessionToken);
     if (resolution.action === 'reject') {
         await sendClientError(event, connectionId, 'Username is already taken.', { action: 'JOIN_SESSION' });
         return;
     }
 
-    // if the user is new, we can add them to the session
-    // if the user is reconnecting, we can update the connectionId for the user
     if (resolution.action === 'add') {
         const color = pickAvailableColor(session.users);
-        session.users.push({ username, color, score: 0, connectionId });
+        const sessionToken = generateSessionToken();
+        session.users.push({ username, color, score: 0, connectionId, sessionToken });
     } else if (resolution.action === 'reconnect') {
         const existing = session.users.find((u) => u.username === username);
         if (existing) existing.connectionId = connectionId;
     }
 
     ensureAdminForSession(session);
-
-    // saves the user/update to the game session
     await saveSession(session);
 
     await ddb.send(
@@ -775,6 +850,7 @@ async function handleJoinSession(connectionId: string, body: any, event: WsHandl
         username: joiningUser.username,
         color: joiningUser.color,
         score: joiningUser.score,
+        sessionToken: joiningUser.sessionToken,
     });
 
     await broadcastLobbyUpdate(event, session);
@@ -863,6 +939,42 @@ async function handleCode(connectionId: string, body: any, event: WsHandlerEvent
         return;
     }
 
+    if (lower.startsWith('p-')) {
+        // Rest is "<username>%<points>" (comma-separated; points may be negative).
+        const rest = raw.replace(/^p-/i, '').trim();
+        if (!rest) {
+            await sendClientError(event, connectionId, 'Invalid format. Use p-<username>,<points>', { action: 'CODE' });
+            return;
+        }
+        const [targetNameRaw, pointsRaw] = rest.split('%');
+        const targetName = targetNameRaw?.trim() ?? '';
+        const pointsStr = pointsRaw?.trim() ?? '';
+        if (!targetName || !pointsStr) {
+            await sendClientError(event, connectionId, 'Invalid format. Use p-<username>,<points>', { action: 'CODE' });
+            return;
+        }
+        const delta = parseInt(pointsStr, 10);
+        if (Number.isNaN(delta)) {
+            await sendClientError(event, connectionId, 'Invalid points. Use an integer (e.g. 5 or -3).', {
+                action: 'CODE',
+            });
+            return;
+        }
+        const target = session.users.find((u) => u.username.toLowerCase() === targetName.toLowerCase());
+        if (!target) {
+            await sendClientError(event, connectionId, `Player "${targetName}" not in lobby.`, { action: 'CODE' });
+            return;
+        }
+        target.score += delta;
+        await saveSession(session);
+        await broadcastLobbyUpdate(event, session);
+        await sendToConnection(event, connectionId, {
+            type: 'CODE_OK',
+            message: `${target.username} has received ${delta} points.`,
+        });
+        return;
+    }
+
     await sendClientError(event, connectionId, 'Unknown code.', { action: 'CODE' });
 }
 
@@ -937,11 +1049,6 @@ export const handler = async (event: WsHandlerEvent) => {
             wsLog(event, { phase: 'disconnect', ok: true });
             // NOTE: Per-disconnect we delete the connection then may scan session + GetItem each player.
             // Fine for a small friends app; optimize if you add many concurrent rooms or large lobbies.
-            // try {
-            //     await removeLobbyUserOnDisconnect(connectionId, event);
-            // } catch (err) {
-            //     console.error('removeLobbyUserOnDisconnect:', err);
-            // }
             try {
                 await ddb.send(
                     new DeleteItemCommand({
@@ -959,13 +1066,6 @@ export const handler = async (event: WsHandlerEvent) => {
                 });
                 throw err;
             }
-            /* Not using this for now, but leaving it here for future reference
-            try {
-                await abandonSessionIfEveryoneDisconnected();
-            } catch (err) {
-                console.error('abandonSessionIfEveryoneDisconnected:', err);
-            }
-            */
             return { statusCode: 200, body: 'Disconnected.' };
         default: {
             event.imposterInvokeMeta = { clientErrorSent: false };

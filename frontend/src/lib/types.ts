@@ -37,7 +37,7 @@ export type GameState = {
 
 export type ServerMessage =
     | { type: 'LOBBY_UPDATE'; data: User[]; safeMode?: boolean; adminUsername?: string | null }
-    | { type: 'JOIN_CONFIRMED'; username: string; color: string; score: number }
+    | { type: 'JOIN_CONFIRMED'; username: string; color: string; score: number; sessionToken?: string }
     | { type: 'QUESTION_ASSIGNMENT'; question: string }
     | { type: 'ROUND_UPDATE'; state: 'VOTING'; data: { correctQuestion: string; answersSubmitted: Answer[] } }
     | { type: 'ROUND_UPDATE'; state: 'RESULT'; data: RoundResult }

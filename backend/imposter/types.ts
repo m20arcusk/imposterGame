@@ -8,6 +8,7 @@ export interface SessionUser {
     color: string;
     score: number;
     connectionId: string;
+    sessionToken?: string;
 }
 
 export interface RoundData {

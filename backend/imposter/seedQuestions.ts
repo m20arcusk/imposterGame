@@ -18,14 +18,17 @@ const REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-w
 //     or: '"<question>" "<range>" "<safe>"'  → safe is true|false (also accepts 1|0)
 // ──────────────────────────────────────────────
 const questionsToAdd = [
-    '"What animal do you want to be more like?" "animal"',
-    '"What animal would you choose to protect you from a zombie?" "animal"',
-    '"Which animal do you think has the best animated movie?" "animal"',
-    '"What pet would you not allow your kid to have?" "animal"',
-    '"What animal do you think the person on your right looks/acts like?" "animal"',
-    '"What animal is your favourite pokemon most like?" "animal"',
-    '"Worst animal to find secretly living in your house?" "animal"',
-    '"Name an animal you’d want to steal a trait from." "animal"',
+    '"Longest time in days you’ve gone without showering?" "1-10"',
+    '"Longest time in days you’ve gone without shitting?" "1-10"',
+    '"How many days could you go eating the exact same meal?" "1-25"',
+    '"What age would you go back to and start life from (you keep your memories)?" "1-25"',
+    '"How many times have you farted or coughed since starting this game?" "1-10"',
+    '"If you could, how many inches would you take off everyone’s height except yourself?" "1-10"',
+    '"Type the name of the person most likely to get blamed for farting." "likely"',
+    '"Type the name of the person most likely to be fat in the future." "likely"',
+    '"Type the name of the person most likely to get away with murder." "likely"',
+    '"Type the name of the person most likely to accidentally commit a crime." "likely"',
+    '"Type the name of the person most likely to forget their passport before a flight." "likely"',
 ];
 
 function generateId(): string {
@@ -67,7 +70,7 @@ async function seed() {
         if (name === 'ResourceNotFoundException') {
             console.error(
                 `\nTable "${TABLE_NAME}" was not found in region "${REGION}" for your current AWS credentials.\n` +
-                    `Fix: set AWS_PROFILE / AWS_REGION / QUESTIONS_TABLE to match the account where you deployed SAM.\n`,
+                `Fix: set AWS_PROFILE / AWS_REGION / QUESTIONS_TABLE to match the account where you deployed SAM.\n`,
             );
         }
         throw e;
